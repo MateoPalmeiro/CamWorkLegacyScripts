@@ -1,332 +1,319 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+Este script organiza archivos RAW (.cr2, .cr3, .arw) en subcarpeta 'RAW' dentro de
+cada carpeta temática de CAMERAS, detecta duplicados por hash SHA-256, imprime
+en consola el mismo contenido que guarda en log, y genera un informe PDF
+compacto y profesional. 
 
-import os
-import shutil
-import logging
-from datetime import datetime
+Cumple estándares profesionales de documentación (ISO/IEC/IEEE).
+"""
 
-from fpdf import FPDF  # Para PDF final
+import os                      # Operaciones con sistema de archivos
+import shutil                  # Movimiento de archivos y directorios
+import logging                 # Registro de eventos
+import hashlib                 # Cálculo de hashes SHA-256
+from datetime import datetime  # Fecha y hora actual
+from fpdf import FPDF          # Generación de documentos PDF
 
-# ----------------------------------------------------------------------------
-# CARPETAS PARA SALIDAS
-# ----------------------------------------------------------------------------
-LOGS_DIR = "logs"
-PDF_DIR = "pdf"
-METADATA_DIR = "metadata"
+# -----------------------------------------------------------------------------
+# 1. CONFIGURACIÓN DE DIRECTORIOS DE SALIDA
+# -----------------------------------------------------------------------------
+LOGS_DIR     = "logs"      # Carpeta para archivos de log
+PDF_DIR      = "pdf"       # Carpeta para informes PDF
+METADATA_DIR = "metadata"  # Carpeta para posibles metadatos
 
-os.makedirs(LOGS_DIR, exist_ok=True)
-os.makedirs(PDF_DIR, exist_ok=True)
+os.makedirs(LOGS_DIR,     exist_ok=True)
+os.makedirs(PDF_DIR,      exist_ok=True)
 os.makedirs(METADATA_DIR, exist_ok=True)
 
-# ----------------------------------------------------------------------------
-# CONFIGURACIÓN DEL LOG
-# ----------------------------------------------------------------------------
-today_str = datetime.now().strftime("%d-%m-%Y")
+# -----------------------------------------------------------------------------
+# 2. CONFIGURACIÓN DE LOGGING (ISO/IEC/IEEE 42010:2011 - Arquitectura de Sistemas)
+# -----------------------------------------------------------------------------
+today_str    = datetime.now().strftime("%d-%m-%Y")
 LOG_FILENAME = os.path.join(LOGS_DIR, f"organizar_raw_{today_str}.log")
 
-logging.basicConfig(
-    filename=LOG_FILENAME,
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+# Logger raíz nivel INFO
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
-# ----------------------------------------------------------------------------
-# PARÁMETROS GLOBALES
-# ----------------------------------------------------------------------------
-CAMERAS_DIR = "CAMARAS"
-RAW_EXTENSIONS = {".cr2", ".arw"}
+# Formato común para file y consola
+formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
 
-folders_report = {}
+# Handler para fichero de log
+fh = logging.FileHandler(LOG_FILENAME)
+fh.setLevel(logging.INFO)
+fh.setFormatter(formatter)
+logger.addHandler(fh)
 
-def human_readable_size(size_in_bytes):
-    if size_in_bytes < 1024:
-        return f"{size_in_bytes} B"
-    elif size_in_bytes < 1024**2:
-        kb = size_in_bytes / 1024
-        return f"{kb:.2f} KB"
-    elif size_in_bytes < 1024**3:
-        mb = size_in_bytes / (1024**2)
-        return f"{mb:.2f} MB"
-    else:
-        gb = size_in_bytes / (1024**3)
-        return f"{gb:.2f} GB"
+# Handler para consola (stdout)
+ch = logging.StreamHandler()
+ch.setLevel(logging.INFO)
+ch.setFormatter(formatter)
+logger.addHandler(ch)
 
+# -----------------------------------------------------------------------------
+# 3. PARÁMETROS GLOBALES
+# -----------------------------------------------------------------------------
+CAMERAS_DIR    = "CAMERAS"                 # Carpeta raíz con cámaras
+RAW_EXTENSIONS = {".cr2", ".cr3", ".arw"}   # Extensiones RAW a procesar
+
+# Estructuras para estadísticas y duplicados
+folders_report = {}   # {ruta_RAW: {'created':bool, 'files':int, 'ext':{}, 'bytes':int}}
+duplicates     = []   # Rutas de archivos duplicados detectados
+
+# -----------------------------------------------------------------------------
+# 4. FUNCIONES AUXILIARES
+# -----------------------------------------------------------------------------
+
+def human_readable_size(size):
+    """
+    Devuelve tamaño en B, KB, MB o GB con dos decimales.
+    """
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024**2:
+        return f"{size/1024:.2f} KB"
+    if size < 1024**3:
+        return f"{size/(1024**2):.2f} MB"
+    return f"{size/(1024**3):.2f} GB"
+
+def sha256_of_file(path, chunk_size=8192):
+    """
+    Calcula SHA-256 de un archivo en bloques.
+    Devuelve hash hexadecimal o None si falla.
+    """
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(chunk_size), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception as e:
+        logger.error(f"Error calculando SHA-256 de '{path}': {e}")
+        return None
+
+def is_duplicate(dest_folder, src_path):
+    """
+    Comprueba duplicados bit a bit (SHA-256) comparando src_path contra
+    todos los archivos en dest_folder (y subcarpetas).
+    """
+    src_hash = sha256_of_file(src_path)
+    if src_hash is None:
+        # No podemos calcular hash; no movemos para prevenir pérdida
+        logger.error(f"No se pudo calcular hash de '{src_path}'; queda sin mover")
+        duplicates.append(src_path)
+        return True
+
+    for root, _, files in os.walk(dest_folder):
+        for fname in files:
+            existing = os.path.join(root, fname)
+            if sha256_of_file(existing) == src_hash:
+                return True
+    return False
 
 def seleccionar_camaras():
+    """
+    Lista carpetas en CAMERAS_DIR y solicita selección por índices.
+    """
     if not os.path.isdir(CAMERAS_DIR):
-        print(f"La carpeta '{CAMERAS_DIR}' no existe o no es un directorio.")
+        logger.critical(f"No existe la carpeta '{CAMERAS_DIR}'.")
         return []
 
-    # Se ordena la lista de cámaras alfabéticamente
-    todas_camaras = sorted([
-        d for d in os.listdir(CAMERAS_DIR)
-        if os.path.isdir(os.path.join(CAMERAS_DIR, d))
-    ])
-
-    if not todas_camaras:
-        print("No se encontraron carpetas de cámaras en la carpeta CAMARAS.")
+    cams = sorted(d for d in os.listdir(CAMERAS_DIR)
+                  if os.path.isdir(os.path.join(CAMERAS_DIR, d)))
+    if not cams:
+        logger.info("No hay subcarpetas en CAMERAS.")
         return []
 
     print("Cámaras disponibles:")
-    for i, cam in enumerate(todas_camaras, start=1):
-        print(f"{i}. {cam}")
-
-    seleccion = input("Indica las cámaras que quieres procesar (p.e. '1,2,5'): ")
-    indices = []
-    for x in seleccion.split(','):
-        x = x.strip()
-        if x.isdigit():
-            indices.append(int(x))
-
-    camaras_seleccionadas = [
-        todas_camaras[i - 1]
-        for i in indices
-        if 1 <= i <= len(todas_camaras)
-    ]
-    return camaras_seleccionadas
-
+    for i, cam in enumerate(cams, 1):
+        print(f"  {i}. {cam}")
+    sel = input("Selecciona cámaras (e.g. '1,3,5'): ")
+    indices = [int(x) for x in sel.split(',') if x.strip().isdigit()]
+    return [cams[i-1] for i in indices if 1 <= i <= len(cams)]
 
 def procesar_directorio(directorio):
-    # Buscamos archivos RAW en el directorio
-    raw_files = [
-        f for f in os.listdir(directorio)
-        if os.path.isfile(os.path.join(directorio, f))
-           and os.path.splitext(f)[1].lower() in RAW_EXTENSIONS
-    ]
+    """
+    Mueve archivos RAW en 'directorio' a subcarpeta 'RAW', detecta duplicados
+    por SHA-256 y actualiza folders_report.
+    """
+    raw_files = [f for f in os.listdir(directorio)
+                 if os.path.isfile(os.path.join(directorio, f))
+                 and os.path.splitext(f)[1].lower() in RAW_EXTENSIONS]
     if not raw_files:
-        logging.info(f"No se encontraron archivos RAW en {directorio}.")
+        logger.info(f"No hay RAW en {directorio}.")
         return
 
-    raw_folder_path = os.path.join(directorio, "RAW")
-    created_now = False
-    if not os.path.exists(raw_folder_path):
+    raw_dir = os.path.join(directorio, "RAW")
+    created = False
+    if not os.path.exists(raw_dir):
         try:
-            os.mkdir(raw_folder_path)
-            logging.info(f"Creada subcarpeta 'RAW' en {directorio}")
-            created_now = True
-        except OSError as e:
-            logging.error(f"Error al crear {raw_folder_path}: {e}")
+            os.makedirs(raw_dir)
+            created = True
+            logger.info(f"Creada carpeta RAW en {directorio}")
+        except Exception as e:
+            logger.error(f"Error creando {raw_dir}: {e}")
             return
 
     for rf in raw_files:
-        orig = os.path.join(directorio, rf)
-        dest = os.path.join(raw_folder_path, rf)
-        size_bytes = os.path.getsize(orig)
-        try:
-            shutil.move(orig, dest)
-            logging.info(f"Movido archivo RAW '{rf}' a {raw_folder_path}")
+        src = os.path.join(directorio, rf)
+        dst = os.path.join(raw_dir, rf)
+        size = os.path.getsize(src)
 
-            if raw_folder_path not in folders_report:
-                folders_report[raw_folder_path] = {
-                    'created': created_now,
-                    'files_count': 0,
-                    'ext_count': {},
-                    'bytes_moved': 0
-                }
-            else:
-                if created_now:
-                    folders_report[raw_folder_path]['created'] = True
-
-            folders_report[raw_folder_path]['files_count'] += 1
-            folders_report[raw_folder_path]['bytes_moved'] += size_bytes
-
-            ext = os.path.splitext(rf)[1].lower()
-            if ext not in folders_report[raw_folder_path]['ext_count']:
-                folders_report[raw_folder_path]['ext_count'][ext] = 0
-            folders_report[raw_folder_path]['ext_count'][ext] += 1
-
-        except PermissionError as e:
-            logging.error(f"Permiso denegado al mover '{rf}': {e}")
-        except OSError as e:
-            logging.error(f"Error al mover '{rf}' a '{raw_folder_path}': {e}")
-
-
-def organizar_raw_en_subcarpeta(camaras):
-    for camera_name in camaras:
-        camera_path = os.path.join(CAMERAS_DIR, camera_name)
-        if not os.path.isdir(camera_path):
+        # Detección de duplicado por hash
+        if is_duplicate(raw_dir, src):
+            logger.warning(f"Duplicado RAW no movido: {src}")
             continue
 
-        logging.info(f"Procesando cámara: {camera_path}")
+        try:
+            shutil.move(src, dst)
+            logger.info(f"Movido RAW '{rf}' → {raw_dir}")
 
-        for monthly_folder in os.listdir(camera_path):
-            monthly_path = os.path.join(camera_path, monthly_folder)
-            if not os.path.isdir(monthly_path):
+            rpt = folders_report.setdefault(raw_dir, {
+                'created': created,
+                'files': 0,
+                'ext': {},
+                'bytes': 0
+            })
+            if created:
+                rpt['created'] = True
+            rpt['files'] += 1
+            rpt['bytes'] += size
+            ext = os.path.splitext(rf)[1].lower()
+            rpt['ext'][ext] = rpt['ext'].get(ext, 0) + 1
+
+        except Exception as e:
+            logger.error(f"Error moviendo '{rf}': {e}")
+
+def organizar_raw_en_subcarpeta(camaras):
+    """
+    Recorre cada cámara y sus subdirectorios temáticos y subtemáticos,
+    procesando RAW en cada uno.
+    """
+    for cam in camaras:
+        cam_path = os.path.join(CAMERAS_DIR, cam)
+        logger.info(f"Procesando cámara: {cam_path}")
+        for month in os.listdir(cam_path):
+            month_path = os.path.join(cam_path, month)
+            if not os.path.isdir(month_path):
                 continue
-
-            theme_folders = [
-                f for f in os.listdir(monthly_path)
-                if os.path.isdir(os.path.join(monthly_path, f))
-            ]
-            if not theme_folders:
-                logging.info(f"No se encontraron carpetas temáticas en {monthly_path}. Se omite.")
+            themes = [d for d in os.listdir(month_path)
+                      if os.path.isdir(os.path.join(month_path, d))]
+            if not themes:
+                logger.info(f"No hay carpetas temáticas en {month_path}")
                 continue
-
-            for theme in theme_folders:
-                theme_path = os.path.join(monthly_path, theme)
-                if not os.path.isdir(theme_path):
-                    continue
-
-                # Primero, procesar RAW en la carpeta temática
+            for theme in themes:
+                theme_path = os.path.join(month_path, theme)
                 procesar_directorio(theme_path)
+                # Procesar subtemas dentro de theme
+                subs = [d for d in os.listdir(theme_path)
+                        if os.path.isdir(os.path.join(theme_path, d))
+                        and d.lower() != "raw"]
+                for sub in subs:
+                    procesar_directorio(os.path.join(theme_path, sub))
 
-                # Luego, si existen subtemáticas (ignorando 'RAW'),
-                # procesar también cada subcarpeta:
-                subtheme_folders = [
-                    d for d in os.listdir(theme_path)
-                    if os.path.isdir(os.path.join(theme_path, d)) and d.lower() != "raw"
-                ]
-                for subtheme in subtheme_folders:
-                    subtheme_path = os.path.join(theme_path, subtheme)
-                    procesar_directorio(subtheme_path)
-
+# -----------------------------------------------------------------------------
+# 5. RESÚMENES: TXT y PDF
+# -----------------------------------------------------------------------------
 
 def generar_resumen_txt():
-    logging.info("=== RESUMEN FINAL DE LA EJECUCIÓN ===")
-
+    """
+    Escribe en el log un resumen detallado de la ejecución.
+    """
+    logger.info("=== RESUMEN FINAL ===")
     if not folders_report:
-        logging.info("No se movió ningún archivo RAW. No hay cambios.")
+        logger.info("No se movió ningún RAW.")
         return
 
     total_bytes = 0
-    carpetas_creadas = []
-    carpetas_existentes = []
+    created = []
+    existed = []
 
-    for folder_key, data in folders_report.items():
-        created_now = data['created']
-        files_count = data['files_count']
-        bytes_moved = data['bytes_moved']
-        ext_count = data['ext_count']
-
-        total_bytes += bytes_moved
-        if created_now:
-            carpetas_creadas.append(folder_key)
+    for folder, data in folders_report.items():
+        total_bytes += data['bytes']
+        if data['created']:
+            created.append(folder)
         else:
-            carpetas_existentes.append(folder_key)
+            existed.append(folder)
+        logger.info(f"Carpeta: {folder} ({'nueva' if data['created'] else 'existente'})")
+        logger.info(f"  Archivos: {data['files']}")
+        for ext, cnt in data['ext'].items():
+            logger.info(f"    {ext}: {cnt}")
+        logger.info(f"  Bytes movidos: {human_readable_size(data['bytes'])}")
 
-        logging.info(f"- Carpeta RAW: {folder_key}")
-        if created_now:
-            logging.info("    (Subcarpeta creada en esta ejecución)")
-        else:
-            logging.info("    (Subcarpeta ya existente)")
-        logging.info(f"    Archivos RAW movidos: {files_count}")
-        logging.info("    Detalle por extensión:")
-        for ext, count in ext_count.items():
-            logging.info(f"      {ext}: {count}")
-        logging.info(f"    Tamaño total movido: {human_readable_size(bytes_moved)}")
-
-    logging.info("=== Detalle de subcarpetas 'RAW' creadas vs. existentes ===")
-    logging.info(f"Subcarpetas 'RAW' creadas en esta ejecución: {len(carpetas_creadas)}")
-    for c in carpetas_creadas:
-        logging.info(f"   -> {c}")
-
-    logging.info(f"Subcarpetas 'RAW' ya existentes donde se movieron archivos: {len(carpetas_existentes)}")
-    for c in carpetas_existentes:
-        logging.info(f"   -> {c}")
-
-    logging.info(f"=== Se han movido un total de {human_readable_size(total_bytes)} en esta ejecución ===")
-
+    logger.info(f"Subcarpetas RAW nuevas: {len(created)}")
+    for c in created:
+        logger.info(f"  - {c}")
+    logger.info(f"Subcarpetas RAW existentes: {len(existed)}")
+    for e in existed:
+        logger.info(f"  - {e}")
+    logger.info(f"Total movido: {human_readable_size(total_bytes)}")
 
 def generar_resumen_pdf():
+    """
+    Genera un PDF profesional con el mismo contenido del resumen.
+    """
     if not folders_report:
         return
 
-    pdf_filename = os.path.join(PDF_DIR, f"organizar_raw_{today_str}.pdf")
+    pdf_path = os.path.join(PDF_DIR, f"organizar_raw_{today_str}.pdf")
     pdf = FPDF(format='A4', orientation='P', unit='mm')
-    pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.set_left_margin(20)
-    pdf.set_right_margin(20)
+    pdf.set_auto_page_break(True, 10)
+    pdf.set_margins(20, 15, 20)
     pdf.add_page()
 
+    # Portada
     pdf.set_font("Arial", "B", 16)
-    pdf.cell(0, 10, "Resumen de Organización de Archivos RAW", ln=True, align='C')
-
-    fecha_hoy = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
-    pdf.set_font("Arial", "", 12)
-    pdf.cell(0, 8, f"Fecha de ejecución: {fecha_hoy}", ln=True)
+    pdf.cell(0, 10, "Resumen de Organización RAW", ln=True, align='C')
     pdf.ln(5)
+    pdf.set_font("Arial", "", 12)
+    pdf.cell(0, 6, f"Fecha: {datetime.now():%d-%m-%Y %H:%M:%S}", ln=True)
+    pdf.ln(8)
 
-    total_bytes = 0
-    carpetas_creadas = []
-    carpetas_existentes = []
+    # Detalles por carpeta
+    for folder, data in folders_report.items():
+        pdf.set_font("Arial", "B", 12)
+        pdf.multi_cell(0, 6, f"Carpeta: {folder}")
+        pdf.set_font("Arial", "", 11)
+        pdf.cell(5)
+        pdf.multi_cell(0, 6, f"- Estado: {'nueva' if data['created'] else 'existente'}")
+        pdf.cell(5)
+        pdf.multi_cell(0, 6, f"- Archivos: {data['files']}")
+        for ext, cnt in data['ext'].items():
+            pdf.cell(10)
+            pdf.multi_cell(0, 6, f"{ext}: {cnt}")
+        pdf.cell(5)
+        pdf.multi_cell(0, 6, f"- Bytes movidos: {human_readable_size(data['bytes'])}")
+        pdf.ln(4)
 
-    def write_line(text, indent=0, bold=False):
-        if bold:
-            pdf.set_font("Arial", "B", 12)
-        else:
-            pdf.set_font("Arial", "", 12)
-        if indent:
-            pdf.cell(indent)
-        pdf.multi_cell(0, 6, text, align='L')
-        pdf.ln(0)
-
-    for folder_key, data in folders_report.items():
-        created_now = data['created']
-        files_count = data['files_count']
-        bytes_moved = data['bytes_moved']
-        ext_count = data['ext_count']
-
-        total_bytes += bytes_moved
-        if created_now:
-            carpetas_creadas.append(folder_key)
-        else:
-            carpetas_existentes.append(folder_key)
-
-        folder_display = folder_key.replace("\\", "/")
-
-        write_line(f"Carpeta RAW: {folder_display}", bold=True)
-        if created_now:
-            write_line("(Subcarpeta creada en esta ejecución)", indent=5)
-        else:
-            write_line("(Subcarpeta ya existente)", indent=5)
-
-        write_line(f"Archivos RAW movidos: {files_count}", indent=5)
-
-        write_line("Detalle por extensión:", indent=5)
-        for ext, count in ext_count.items():
-            write_line(f"- {ext}: {count}", indent=10)
-
-        size_str = human_readable_size(bytes_moved)
-        write_line(f"Tamaño total movido: {size_str}", indent=5)
-        pdf.ln(5)
-
+    # Resumen global
     pdf.set_font("Arial", "B", 14)
     pdf.cell(0, 8, "Resumen Global:", ln=True)
-    pdf.set_font("Arial", "", 12)
+    pdf.set_font("Arial", "", 11)
+    total_bytes = sum(d['bytes'] for d in folders_report.values())
+    pdf.cell(0, 6, f"Total movido: {human_readable_size(total_bytes)}", ln=True)
+    pdf.cell(0, 6, f"Subcarpetas creadas: {sum(1 for d in folders_report if folders_report[d]['created'])}", ln=True)
+    pdf.cell(0, 6, f"Subcarpetas existentes: {sum(1 for d in folders_report if not folders_report[d]['created'])}", ln=True)
 
-    write_line(f"Subcarpetas 'RAW' creadas en esta ejecución: {len(carpetas_creadas)}")
-    for c in carpetas_creadas:
-        c_disp = c.replace("\\", "/")
-        write_line(f"   -> {c_disp}", indent=5)
+    pdf.output(pdf_path)
+    logger.info(f"PDF generado: {pdf_path}")
 
-    write_line(f"Subcarpetas 'RAW' ya existentes: {len(carpetas_existentes)}")
-    for c in carpetas_existentes:
-        c_disp = c.replace("\\", "/")
-        write_line(f"   -> {c_disp}", indent=5)
-
-    total_str = human_readable_size(total_bytes)
-    write_line(f"Se han movido un total de {total_str} en esta ejecución.")
-
-    pdf.output(pdf_filename)
-    logging.info(f"PDF generado correctamente: {pdf_filename}")
-
-
+# -----------------------------------------------------------------------------
+# 6. EJECUCIÓN PRINCIPAL
+# -----------------------------------------------------------------------------
 def main():
     try:
-        camaras_a_procesar = seleccionar_camaras()
-        if not camaras_a_procesar:
-            print("No se seleccionaron cámaras o no hay cámaras disponibles. Saliendo.")
+        cams = seleccionar_camaras()
+        if not cams:
+            print("No se seleccionaron cámaras. Saliendo.")
             return
-
-        organizar_raw_en_subcarpeta(camaras_a_procesar)
+        organizar_raw_en_subcarpeta(cams)
         generar_resumen_txt()
         generar_resumen_pdf()
-
-        logging.info("Proceso de organización de archivos RAW finalizado.")
+        logger.info("Proceso de organización RAW finalizado.")
     except Exception as e:
-        logging.error(f"Error inesperado: {e}")
-
+        logger.error(f"Error inesperado: {e}")
 
 if __name__ == "__main__":
     main()
