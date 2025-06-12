@@ -16,9 +16,13 @@ Flujos principales:
   - Mueve archivos no duplicados a la carpeta destino.
   - Crea un PDF compacto y profesional con métricas y resúmenes.
   - Registra todos los eventos en un log .txt y los imprime por pantalla.
+
 Cumple estándares ISO/IEC/IEEE para documentación y mantenimiento.
 """
 
+# -----------------------------------------------------------------------------
+# IMPORTACIONES PRINCIPALES
+# -----------------------------------------------------------------------------
 import os                      # Operaciones con sistema de archivos
 import re                      # Sanitización de nombres de carpeta
 import shutil                  # Movimiento de archivos
@@ -36,7 +40,6 @@ PHOTO_EXTENSIONS = {          # Extensiones admitidas
     ".arw", ".cr2", ".cr3",
     ".jpg", ".mov", ".mp4", ".mts"
 }
-
 MODEL_TO_FOLDER = {           # Mapeo EXIF Model → carpeta destino
     "Canon EOS 650D":               "Canon EOS 650D",
     "Canon EOS M50m2":              "Canon EOS M50m2",
@@ -63,25 +66,32 @@ os.makedirs(LOGS_DIR, exist_ok=True)
 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 LOG_FILENAME = os.path.join(LOGS_DIR, f"clasificar_imagenes_{ts}.log")
 
-logging.basicConfig(
-    filename=LOG_FILENAME,
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
+# Logger raíz
 logger = logging.getLogger()
-# Handler para mostrar logs en consola
+logger.setLevel(logging.INFO)
+
+# Formato estándar: timestamp - nivel - mensaje
+fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+
+# Handler a fichero de log
+fh = logging.FileHandler(LOG_FILENAME)
+fh.setLevel(logging.INFO)
+fh.setFormatter(fmt)
+logger.addHandler(fh)
+
+# Handler a consola (stdout)
 ch = logging.StreamHandler()
 ch.setLevel(logging.INFO)
-ch.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+ch.setFormatter(fmt)
 logger.addHandler(ch)
 
 # -----------------------------------------------------------------------------
 # LISTAS PARA RESUMEN
 # -----------------------------------------------------------------------------
-unmapped        = []   # Archivos sin EXIF Model o modelo no mapeado
-duplicates      = []   # Archivos duplicados detectados (hash iguales)
-moved           = []   # Archivos movidos correctamente
-scanned_cameras = set()# Carpetas destino usadas
+unmapped        = []    # Archivos sin EXIF Model o modelo no mapeado
+duplicates      = []    # Archivos duplicados detectados (hash iguales)
+moved           = []    # Archivos movidos correctamente
+scanned_cameras = set() # Carpeta destino usadas
 
 # -----------------------------------------------------------------------------
 # FUNCIONES AUXILIARES
@@ -135,23 +145,20 @@ def is_duplicate(dest_folder, src_path):
     """
     src_hash = sha256_of_file(src_path)
     if src_hash is None:
-        # No se puede calcular hash: consideramos que no es duplicado,
-        # pero registramos para revisión.
+        # No se puede calcular hash: no movemos el archivo y lo marcamos
         logger.error(f"Imposible calcular hash, '{src_path}' queda sin mover")
         unmapped.append(src_path)
-        return True  # Para no moverlo
+        return True
     for root, _, files in os.walk(dest_folder):
         for f in files:
             existing = os.path.join(root, f)
-            h = sha256_of_file(existing)
-            if h == src_hash:
+            if sha256_of_file(existing) == src_hash:
                 return True
     return False
 
 # -----------------------------------------------------------------------------
-# GENERACIÓN DE INFORME PDF PROFESIONAL
+# GENERACIÓN DE INFORME PDF PROFESIONAL (ISO/IEC/IEEE 26514:2018)
 # -----------------------------------------------------------------------------
-
 def generate_report_pdf(processed_count):
     """
     Crea un PDF compacto y profesional con:
@@ -169,7 +176,7 @@ def generate_report_pdf(processed_count):
     pdf.set_auto_page_break(auto=True, margin=10)
     pdf.set_margins(15, 15, 15)
 
-    # Portada
+    # ---- Portada ----
     pdf.add_page()
     pdf.set_font("Arial", "B", 16)
     pdf.cell(0, 10, "Informe de Clasificación de Archivos", ln=True, align='C')
@@ -178,7 +185,7 @@ def generate_report_pdf(processed_count):
     pdf.cell(0, 6, f"Fecha: {datetime.now():%d-%m-%Y %H:%M:%S}", ln=True, align='C')
     pdf.ln(10)
 
-    # Métricas generales
+    # ---- Métricas generales ----
     pdf.set_font("Arial", "B", 12)
     pdf.cell(0, 6, "Métricas Generales", ln=True)
     pdf.ln(2)
@@ -195,7 +202,7 @@ def generate_report_pdf(processed_count):
     pdf.cell(0, 6, str(len(scanned_cameras)), ln=True)
     pdf.ln(8)
 
-    # Tabla resumen por carpeta
+    # ---- Tabla resumen por carpeta ----
     pdf.set_font("Arial", "B", 12)
     pdf.cell(0, 6, "Resumen por Carpeta", ln=True)
     pdf.ln(2)
@@ -215,7 +222,7 @@ def generate_report_pdf(processed_count):
         pdf.ln()
     pdf.ln(5)
 
-    # Listado sin EXIF Model
+    # ---- Listado sin EXIF 'Model' ----
     if unmapped:
         pdf.set_font("Arial", "B", 12)
         pdf.cell(0, 6, "Sin EXIF 'Model'", ln=True)
@@ -227,7 +234,7 @@ def generate_report_pdf(processed_count):
             pdf.multi_cell(0, 5, f"- {short}")
         pdf.ln(3)
 
-    # Listado de duplicados
+    # ---- Listado de duplicados ----
     if duplicates:
         pdf.set_font("Arial", "B", 12)
         pdf.cell(0, 6, "Duplicados", ln=True)
@@ -243,20 +250,18 @@ def generate_report_pdf(processed_count):
     logger.info(f"PDF generado: {pdf_path}")
 
 # -----------------------------------------------------------------------------
-# FUNCIÓN PRINCIPAL
+# FUNCIÓN PRINCIPAL (ISO/IEC/IEEE 12207:2017)
 # -----------------------------------------------------------------------------
-
 def classify_images():
     """
     Clasifica cada archivo en CAMERAS_DIR:
       1) Verifica extensión en PHOTO_EXTENSIONS.
       2) Lee tag EXIF 'Model'.
-      3) Si no existe, deja sin mover y registra.
+      3) Si no existe, registra y omite.
       4) Mapea modelo a carpeta destino.
-      5) Si no está en MAPA, deja sin mover y registra.
-      6) Detecta duplicados bit a bit (SHA-256).
-      7) Mueve archivo o registra duplicado.
-      8) Al final, genera informe PDF.
+      5) Detecta duplicados SHA-256.
+      6) Mueve o registra duplicado.
+      7) Al final, genera informe PDF.
     """
     if not os.path.isdir(CAMERAS_DIR):
         logger.critical(f"No existe '{CAMERAS_DIR}'")
@@ -323,6 +328,5 @@ def classify_images():
 # -----------------------------------------------------------------------------
 # EJECUCIÓN
 # -----------------------------------------------------------------------------
-
 if __name__ == "__main__":
     classify_images()

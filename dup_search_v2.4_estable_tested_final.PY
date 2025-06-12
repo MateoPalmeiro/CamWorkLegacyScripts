@@ -13,13 +13,17 @@ Flujos principales:
   - Produce un PDF compacto y profesional con métricas generales, tabla resumen
     por cámara y detalle de los duplicados.
 
-Cumple estándares profesionales de documentación (ISO/IEEE).
+Cumple estándares profesionales de documentación (ISO/IEC/IEEE 42010:2011,
+ISO/IEC/IEEE 12207:2017, ISO/IEC/IEEE 26514:2018).
 """
 
+# -----------------------------------------------------------------------------
+# IMPORTACIONES PRINCIPALES
+# -----------------------------------------------------------------------------
 import os                     # Operaciones con sistema de archivos
 import hashlib                # Cálculo de hashes SHA-256
 import logging                # Registro de eventos (logs)
-import sys                    # Manejo de salidas y errores críticos
+import sys                    # Manejo de salidas críticas
 from datetime import datetime # Fecha y hora actual
 from fpdf import FPDF         # Generación de documentos PDF
 
@@ -27,23 +31,26 @@ from fpdf import FPDF         # Generación de documentos PDF
 # CONFIGURACIÓN DE LOGS (ISO/IEC/IEEE 42010:2011 - Arquitectura de Sistemas)
 # -----------------------------------------------------------------------------
 LOGS_DIR = "logs"
-os.makedirs(LOGS_DIR, exist_ok=True)
-ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+os.makedirs(LOGS_DIR, exist_ok=True)  # Crear carpeta de logs si no existe
 
+ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 MAIN_LOG        = os.path.join(LOGS_DIR, f"scan_sha256_{ts}.log")
 CONTENTS_FILE   = os.path.join(LOGS_DIR, f"folder_contents_{ts}.txt")
 DUPLICATES_FILE = os.path.join(LOGS_DIR, f"duplicates_sha256_{ts}.txt")
 
+# Configuración básica del logger de raíz
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
 
+# Handler a fichero
 fh = logging.FileHandler(MAIN_LOG)
 fh.setLevel(logging.INFO)
 fh.setFormatter(fmt)
 logger.addHandler(fh)
 
+# Handler a consola (stdout)
 ch = logging.StreamHandler(sys.stdout)
 ch.setLevel(logging.INFO)
 ch.setFormatter(fmt)
@@ -52,18 +59,18 @@ logger.addHandler(ch)
 # -----------------------------------------------------------------------------
 # PARÁMETROS GLOBALES (ISO/IEC/IEEE 12207:2017 - Ciclo de Vida del Software)
 # -----------------------------------------------------------------------------
-CAMERAS_DIR      = "CAMERAS"
-PHOTO_EXTENSIONS = {            # Extensiones de archivos a procesar
+CAMERAS_DIR      = "CAMERAS"  # Carpeta raíz con subcarpetas de cámaras
+PHOTO_EXTENSIONS = {           # Extensiones a procesar
     ".arw", ".cr2", ".cr3",
     ".jpg", ".mov", ".mp4", ".mts"
 }
 
-# Estructuras para reportes
-files_by_folder    = {}  # {ruta_directorio: [archivo1, archivo2, ...]}
+# Estructuras para acumular datos
+files_by_folder    = {}  # {directorio: [archivo1, archivo2, ...]}
 camera_to_names    = {}  # {cámara: {nombre_archivo: [rutas...]}}
 duplicates_report  = {}  # {cámara: {archivo: {hash: [rutas...]}}}
-cameras_scanned    = []  # Lista de cámaras realmente procesadas
-cameras_skipped    = []  # PRIVATE y GoPro
+cameras_scanned    = []  # Cámaras procesadas
+cameras_skipped    = []  # Cámaras omitidas (PRIVATE, Gopro)
 
 # -----------------------------------------------------------------------------
 # FUNCIONES AUXILIARES
@@ -71,8 +78,8 @@ cameras_skipped    = []  # PRIVATE y GoPro
 
 def sha256_of_file(path, chunk_size=8192):
     """
-    Calcula SHA-256 de un archivo en bloques.
-    Devuelve el hash hexadecimal o None si ocurre un error.
+    Calcula el hash SHA-256 de un archivo leyendo en bloques.
+    Devuelve el hash hexadecimal o None si ocurre error.
     """
     h = hashlib.sha256()
     try:
@@ -86,9 +93,9 @@ def sha256_of_file(path, chunk_size=8192):
 
 def seleccionar_camaras():
     """
-    Enumera subcarpetas de CAMERAS excluyendo PRIVATE y GoPro
-    (para evitar bloqueos por tamaños enormes de los archivos),
-    y devuelve la lista ordenada de cámaras a procesar.
+    Enumera subcarpetas de CAMERAS, excluyendo PRIVATE y aquellas con "Gopro",
+    para evitar grandes volúmenes que bloqueen el proceso.
+    Retorna lista de cámaras a procesar.
     """
     if not os.path.isdir(CAMERAS_DIR):
         logger.critical(f"No existe la carpeta raíz '{CAMERAS_DIR}'.")
@@ -100,36 +107,41 @@ def seleccionar_camaras():
         full = os.path.join(CAMERAS_DIR, d)
         if not os.path.isdir(full):
             continue
+        # Omitir carpetas privadas y GoPro
         if d == "PRIVATE" or "Gopro" in d:
+            logger.info(f"Omitida cámara: {d}")
             cameras_skipped.append(d)
         else:
             selected.append(d)
     return selected
 
 # -----------------------------------------------------------------------------
-# FASE 1: Listado de contenidos por carpeta
+# FASE 1: LISTADO DE CONTENIDOS POR CARPETA
 # -----------------------------------------------------------------------------
 
 def listar_contenidos(cameras):
     """
-    Recorre cada cámara y recopila archivos con extensiones válidas.
-    Guarda un fichero de texto con el listado completo.
+    Recorre cada cámara válida y lista archivos con extensiones válidas.
+    Guarda el listado completo en un fichero de texto.
     """
-    logger.info(f"Listando contenidos de cámaras (omitidas: {cameras_skipped})")
+    logger.info(f"Listando contenidos (omitidas: {cameras_skipped})")
     total = 0
+
     for cam in cameras:
         cameras_scanned.append(cam)
         cam_path = os.path.join(CAMERAS_DIR, cam)
+        # Recorrido recursivo, filtrando PRIVATE y Gopro
         for root, dirs, files in os.walk(cam_path):
-            # Excluir PRIVATE y carpetas con "Gopro" para evitar bloqueos
             dirs[:] = [d for d in dirs if d != "PRIVATE" and "Gopro" not in d]
             valid = [f for f in files
                      if os.path.splitext(f)[1].lower() in PHOTO_EXTENSIONS]
             if valid:
                 files_by_folder[root] = sorted(valid)
-                total += len(valid)
-                logger.info(f"{len(valid)} archivos en '{root}'")
-    # Guardar listado en fichero
+                count = len(valid)
+                total += count
+                logger.info(f"{count} archivos en '{root}'")
+
+    # Escribir listado a fichero
     with open(CONTENTS_FILE, "w", encoding="utf-8") as cf:
         cf.write(f"LISTADO DE CONTENIDOS - {ts}\n\n")
         for folder, fnames in files_by_folder.items():
@@ -137,42 +149,45 @@ def listar_contenidos(cameras):
             for f in fnames:
                 cf.write(f"  - {f}\n")
             cf.write("\n")
-    logger.info(f"Listado de contenidos guardado en: {CONTENTS_FILE}")
+    logger.info(f"Listado guardado en: {CONTENTS_FILE}")
     return total
 
 # -----------------------------------------------------------------------------
-# FASE 2: Detección de duplicados por SHA-256
+# FASE 2: DETECCIÓN DE DUPLICADOS POR SHA-256
 # -----------------------------------------------------------------------------
 
 def detectar_duplicados():
     """
-    Agrupa por cámara y nombre de archivo, calcula SHA-256 y detecta
-    duplicados reales (mismo hash). Guarda un informe de texto.
+    Agrupa rutas por cámara y nombre de archivo, calcula hashes y detecta
+    duplicados reales (mismo hash). Guarda informe de texto y almacena
+    en duplicates_report para el PDF.
     """
-    logger.info("Iniciando detección de duplicados (SHA-256)...")
-    # Agrupar rutas por cámara y nombre de archivo
+    logger.info("Detectando duplicados (SHA-256)...")
+
+    # Agrupar por cámara y nombre
     for folder, fnames in files_by_folder.items():
-        rel = os.path.relpath(folder, CAMERS_DIR)
+        rel = os.path.relpath(folder, CAMERAS_DIR)
         cam = rel.split(os.sep, 1)[0]
         for name in fnames:
-            key = name.lower()
-            full = os.path.join(folder, name)
-            camera_to_names.setdefault(cam, {}).setdefault(key, []).append(full)
+            camera_to_names.setdefault(cam, {}).setdefault(name, []).append(
+                os.path.join(folder, name)
+            )
 
-    # Abrir fichero de duplicados
+    # Abrir informe de duplicados
     with open(DUPLICATES_FILE, "w", encoding="utf-8") as df:
         df.write(f"DUPLICADOS SHA-256 - {ts}\n\n")
+        # Para cada cámara
         for cam, name_dict in camera_to_names.items():
             for name, paths in name_dict.items():
                 if len(paths) < 2:
-                    continue
-                # Calcular hashes y agrupar
+                    continue  # No hay posible duplicado
+                # Calcular hash de cada ruta
                 hash_to_paths = {}
                 for p in paths:
                     h = sha256_of_file(p)
                     if h:
                         hash_to_paths.setdefault(h, []).append(p)
-                # Registrar duplicados
+                # Registrar verdaderos duplicados
                 for h, ps in hash_to_paths.items():
                     if len(ps) > 1:
                         duplicates_report.setdefault(cam, {}) \
@@ -182,25 +197,25 @@ def detectar_duplicados():
                         for p in ps:
                             df.write(f"    - {p}\n")
                         df.write("\n")
-                        logger.warning(f"Duplicado encontrado: {cam}/{name} (SHA-256={h})")
+                        logger.warning(f"Duplicado: {cam}/{name} (SHA-256={h})")
         if not duplicates_report:
             df.write("No se encontraron duplicados.\n")
-    logger.info(f"Informe de duplicados guardado en: {DUPLICATES_FILE}")
+    logger.info(f"Informe duplicados guardado en: {DUPLICATES_FILE}")
 
 # -----------------------------------------------------------------------------
-# FASE 3: Generación de informe PDF profesional
+# FASE 3: GENERACIÓN DE INFORME PDF PROFESIONAL
 # -----------------------------------------------------------------------------
 
 def generar_reporte_pdf(total_files):
     """
-    Crea un PDF compacto y profesional con:
-      - Portada con título y fecha de ejecución.
+    Crea un PDF con:
+      - Portada (título y fecha).
       - Métricas generales.
       - Tabla resumen por cámara.
       - Detalle de duplicados encontrados.
     """
     if not duplicates_report:
-        logger.info("No hay duplicados para incluir en el PDF.")
+        logger.info("No hay duplicados para el PDF.")
         return
 
     pdf_file = os.path.join(LOGS_DIR, f"dup_report_{ts}.pdf")
@@ -214,14 +229,14 @@ def generar_reporte_pdf(total_files):
     pdf.cell(0, 10, "Informe de Detección de Duplicados", ln=True, align='C')
     pdf.ln(5)
     pdf.set_font("Arial", "", 12)
-    pdf.cell(0, 6, f"Fecha de ejecución: {datetime.now():%d-%m-%Y %H:%M:%S}", ln=True, align='C')
+    pdf.cell(0, 6, f"Fecha: {datetime.now():%d-%m-%Y %H:%M:%S}", ln=True, align='C')
     pdf.ln(10)
 
-    # ---- Métricas generales ----
+    # ---- Métricas Generales ----
     total_cameras = len(cameras_scanned)
     total_skipped = len(cameras_skipped)
-    total_groups  = sum(len(nd) for nd in duplicates_report.values())
-    total_dups    = sum(len(ps) for cam in duplicates_report.values() for nd in cam.values())
+    total_groups  = sum(len(g) for g in duplicates_report.values())
+    total_dups    = sum(len(ps) for cam in duplicates_report.values() for ps in cam.values())
 
     pdf.set_font("Arial", "B", 12)
     pdf.cell(0, 6, "Métricas Generales", ln=True)
@@ -229,7 +244,7 @@ def generar_reporte_pdf(total_files):
     pdf.set_font("Arial", "", 11)
     pdf.cell(60, 6, "Cámaras escaneadas:", border=0)
     pdf.cell(0, 6, str(total_cameras), ln=True)
-    pdf.cell(60, 6, "Archivos analizados:", border=0)
+    pdf.cell(60, 6, "Archivos procesados:", border=0)
     pdf.cell(0, 6, str(total_files), ln=True)
     pdf.cell(60, 6, "Grupos de duplicados:", border=0)
     pdf.cell(0, 6, str(total_groups), ln=True)
@@ -252,9 +267,11 @@ def generar_reporte_pdf(total_files):
 
     pdf.set_font("Arial", "", 11)
     for cam in cameras_scanned:
-        scanned = sum(len(files_by_folder.get(root, []))
-                      for root in files_by_folder
-                      if os.path.relpath(root, CAMERAS_DIR).split(os.sep,1)[0] == cam)
+        scanned = sum(
+            len(files_by_folder.get(root, []))
+            for root in files_by_folder
+            if os.path.relpath(root, CAMERAS_DIR).split(os.sep, 1)[0] == cam
+        )
         groups = len(duplicates_report.get(cam, {}))
         dup_files = sum(len(ps) for ps in duplicates_report.get(cam, {}).values())
         pdf.cell(50, 6, cam, border=1)
@@ -273,16 +290,15 @@ def generar_reporte_pdf(total_files):
         for name, hash_dict in name_dict.items():
             pdf.multi_cell(0, 5, f"Archivo: {name}")
             for h, paths in hash_dict.items():
-                if len(paths) > 1:
-                    pdf.cell(5)
-                    pdf.multi_cell(0, 5, f"SHA-256: {h}")
-                    for p in paths:
-                        pdf.cell(10)
-                        line = p.replace("\\", "/")
-                        if len(line) > 70:
-                            line = "…" + line[-69:]
-                        pdf.multi_cell(0, 5, f"- {line}")
-                    pdf.ln(1)
+                pdf.cell(5)
+                pdf.multi_cell(0, 5, f"SHA-256: {h}")
+                for p in paths:
+                    pdf.cell(10)
+                    line = p.replace("\\", "/")
+                    if len(line) > 70:
+                        line = "…" + line[-69:]
+                    pdf.multi_cell(0, 5, f"- {line}")
+                pdf.ln(1)
         pdf.ln(3)
 
     pdf.output(pdf_file)
@@ -293,9 +309,17 @@ def generar_reporte_pdf(total_files):
 # -----------------------------------------------------------------------------
 
 def main():
-    total_files = listar_contenidos(seleccionar_camaras())
+    """
+    Orquesta el flujo completo:
+      1) Selección de cámaras.
+      2) Listado de contenidos.
+      3) Detección de duplicados.
+      4) Generación de informe PDF.
+    """
+    cams = seleccionar_camaras()
+    total = listar_contenidos(cams)
     detectar_duplicados()
-    generar_reporte_pdf(total_files)
+    generar_reporte_pdf(total)
     logger.info("Ejecución completada correctamente.")
 
 if __name__ == "__main__":

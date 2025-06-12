@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Este script recorre la carpeta CAMARAS y extrae modelos EXIF y extensiones de archivo,
+Este script recorre la carpeta CAMERAS y extrae modelos EXIF y extensiones de archivo,
 saltando los archivos con extensiones no deseadas (.ffs_db, .ini), registrando en log y
 consola, detecta vídeos (MP4/MTS) sin tag EXIF 'Model', y genera un informe PDF
 profesional con métricas y listas finales.
@@ -9,6 +9,9 @@ profesional con métricas y listas finales.
 Cumple estándares profesionales de documentación ISO/IEC/IEEE.
 """
 
+# -----------------------------------------------------------------------------
+# 1. IMPORTACIONES PRINCIPALES
+# -----------------------------------------------------------------------------
 import os                      # Operaciones con sistema de archivos
 import subprocess              # Llamadas a exiftool para EXIF 'Model'
 import logging                 # Registro de eventos (logs)
@@ -17,9 +20,9 @@ from datetime import datetime  # Fecha y hora actuales
 from fpdf import FPDF          # Generación de documentos PDF
 
 # -----------------------------------------------------------------------------
-# 1. CONFIGURACIÓN DE DIRECTORIOS
+# 2. CONFIGURACIÓN DE DIRECTORIOS (ISO/IEC/IEEE 12207:2017 - Ciclo de Vida SW)
 # -----------------------------------------------------------------------------
-CAMERAS_DIR    = "CAMARAS"    # Carpeta raíz a recorrer
+CAMERAS_DIR    = "CAMERAS"    # Carpeta raíz a recorrer
 LOGS_DIR       = "logs"       # Carpeta para logs
 PDF_DIR        = "pdf"        # Carpeta para informes PDF
 
@@ -27,7 +30,7 @@ os.makedirs(LOGS_DIR, exist_ok=True)
 os.makedirs(PDF_DIR,  exist_ok=True)
 
 # -----------------------------------------------------------------------------
-# 2. CONFIGURACIÓN DE LOGGING (ISO/IEC/IEEE 42010:2011)
+# 3. CONFIGURACIÓN DE LOGGING (ISO/IEC/IEEE 42010:2011 - Arquitectura de Sistemas)
 # -----------------------------------------------------------------------------
 timestamp    = datetime.now().strftime("%Y%m%d_%H%M%S")
 LOG_FILENAME = os.path.join(LOGS_DIR, f"scan_models_ext_{timestamp}.log")
@@ -50,7 +53,7 @@ ch.setFormatter(fmt)
 logger.addHandler(ch)
 
 # -----------------------------------------------------------------------------
-# 3. ESTRUCTURAS DE DATOS PARA RESULTADOS
+# 4. ESTRUCTURAS DE DATOS PARA RESULTADOS
 # -----------------------------------------------------------------------------
 models          = set()    # Modelos EXIF únicos
 extensions      = set()    # Extensiones de archivo únicas (válidas)
@@ -61,7 +64,7 @@ processed_count = 0        # Total de archivos procesados
 SKIP_EXTENSIONS = {".ffs_db", ".ini"}
 
 # -----------------------------------------------------------------------------
-# 4. FUNCIONES AUXILIARES
+# 5. FUNCIONES AUXILIARES
 # -----------------------------------------------------------------------------
 
 def get_exif_model(path):
@@ -116,7 +119,7 @@ def process_file(path):
         logger.info(f"Procesado: '{path}' | Sin tag EXIF 'Model' relevante | Extensión: '{ext}'")
 
 # -----------------------------------------------------------------------------
-# 5. FASE 1: Archivos en la raíz de CAMERAS_DIR
+# 6. FASE 1: ARCHIVOS EN LA RAÍZ DE CAMERAS_DIR
 # -----------------------------------------------------------------------------
 logger.info(f"Iniciando escaneo en raíz de '{CAMERAS_DIR}'")
 if not os.path.isdir(CAMERAS_DIR):
@@ -134,7 +137,7 @@ for entry in os.listdir(CAMERAS_DIR):
     process_file(full)
 
 # -----------------------------------------------------------------------------
-# 6. FASE 2: Archivos en subcarpetas de modelo (un archivo por extensión)
+# 7. FASE 2: ARCHIVOS EN SUBCARPETAS DE MODELO
 # -----------------------------------------------------------------------------
 for entry in os.listdir(CAMERAS_DIR):
     model_dir = os.path.join(CAMERAS_DIR, entry)
@@ -158,7 +161,7 @@ for entry in os.listdir(CAMERAS_DIR):
 logger.info("Escaneo completado")
 
 # -----------------------------------------------------------------------------
-# 7. GENERACIÓN DE RESUMEN EN TXT
+# 8. GENERACIÓN DE RESUMEN EN TXT
 # -----------------------------------------------------------------------------
 SUMMARY_TXT = os.path.join(LOGS_DIR, f"resumen_models_ext_{timestamp}.txt")
 try:
@@ -176,7 +179,7 @@ except Exception as e:
     logger.error(f"Error escribiendo resumen '{SUMMARY_TXT}': {e}")
 
 # -----------------------------------------------------------------------------
-# 8. GENERACIÓN DE INFORME PDF PROFESIONAL
+# 9. GENERACIÓN DE INFORME PDF PROFESIONAL
 # -----------------------------------------------------------------------------
 def generate_report_pdf():
     """
@@ -246,7 +249,7 @@ def generate_report_pdf():
     logger.info(f"Informe PDF generado: {pdf_path}")
 
 # -----------------------------------------------------------------------------
-# 9. PUNTO DE ENTRADA
+# 10. PUNTO DE ENTRADA
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
     generate_report_pdf()

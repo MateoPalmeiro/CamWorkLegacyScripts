@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Este script organiza archivos multimedia de cámaras por fecha de captura y
-genera un informe PDF compacto, profesional y fácil de leer. 
+genera un informe PDF compacto, profesional y fácil de leer.
 
 Flujos principales:
   - Extrae DateTimeOriginal de EXIF como fecha principal.
@@ -15,37 +15,37 @@ Cumple estándares de documentación ISO/IEC/IEEE para facilitar mantenimiento
 y comprensión a futuro.
 """
 
+# -----------------------------------------------------------------------------
+# IMPORTACIONES PRINCIPALES
+# -----------------------------------------------------------------------------
 import os                      # Operaciones con sistema de archivos
-import re                      # Expresiones regulares para validación de nombres
-import shutil                  # Movimiento y copia de archivos
+import re                      # Validación de patrones de nombre
+import shutil                  # Movimiento de archivos
 import logging                 # Registro de eventos (logs)
 import subprocess              # Llamadas a exiftool para metadatos
-import json                    # Parseo de salida JSON de exiftool
-from datetime import datetime, timedelta
+import json                    # Parseo de JSON devuelto por exiftool
+from datetime import datetime, timedelta  # Fecha y hora
 from fpdf import FPDF         # Generación de documentos PDF
 
 # -----------------------------------------------------------------------------
-# CONFIGURACIÓN DE LOGS (ISO/IEC/IEEE 42010:2011 - Arquitectura de Software)
+# CONFIGURACIÓN DE LOGS (ISO/IEC/IEEE 42010:2011 - Arquitectura de Sistemas)
 # -----------------------------------------------------------------------------
-LOGS_DIR = "logs"  # Carpeta para almacenar logs de ejecución
+LOGS_DIR = "logs"  # Carpeta para logs
 os.makedirs(LOGS_DIR, exist_ok=True)
 
 today_str    = datetime.now().strftime("%d-%m-%Y")
 LOG_FILENAME = os.path.join(LOGS_DIR, f"organizar_por_fecha_{today_str}.log")
 
-logger = logging.getLogger()         # Logger raíz
+logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-# Formato estándar: timestamp - nivel - mensaje
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
-# Handler para fichero de logs
 fh = logging.FileHandler(LOG_FILENAME)
 fh.setLevel(logging.INFO)
 fh.setFormatter(formatter)
 logger.addHandler(fh)
 
-# Handler para consola (stdout)
 ch = logging.StreamHandler()
 ch.setLevel(logging.INFO)
 ch.setFormatter(formatter)
@@ -54,15 +54,18 @@ logger.addHandler(ch)
 # -----------------------------------------------------------------------------
 # PARÁMETROS GLOBALES (ISO/IEC/IEEE 12207:2017 - Ciclo de Vida del Software)
 # -----------------------------------------------------------------------------
-CAMERAS_DIR      = "CAMERAS"   # Carpeta raíz que contiene subcarpetas de cámaras
-PHOTO_EXTENSIONS = {            # Extensiones de archivos a procesar
+CAMERAS_DIR      = "CAMERAS"   # Carpeta raíz con subcarpetas de cámaras
+PDF_DIR          = "pdf"       # Carpeta donde se guardará el informe PDF
+PHOTO_EXTENSIONS = {            # Extensiones válidas a procesar
     ".arw", ".cr2", ".cr3",
     ".jpg", ".mov", ".mp4", ".mts"
 }
 
-# Estructuras de datos para reporte
-folders_report = {}  # Estadísticas: fotos movidas, bytes y conteo por extensión
-duplicates     = []  # Rutas de archivos detectados como duplicados
+os.makedirs(PDF_DIR, exist_ok=True)
+
+# Estructuras de datos para el informe
+folders_report = {}  # {dest_folder: {'photos_count', 'bytes_moved', 'ext_count'}}
+duplicates     = []  # Lista de rutas duplicadas detectadas
 
 # -----------------------------------------------------------------------------
 # FUNCIONES AUXILIARES
@@ -70,7 +73,7 @@ duplicates     = []  # Rutas de archivos detectados como duplicados
 
 def human_readable_size(size_in_bytes):
     """
-    Convierte tamaño en bytes a unidad legible (B, KB, MB, GB).
+    Convierte un tamaño en bytes a una cadena legible (B, KB, MB, GB).
     """
     if size_in_bytes < 1024:
         return f"{size_in_bytes} B"
@@ -80,11 +83,14 @@ def human_readable_size(size_in_bytes):
         return f"{size_in_bytes/(1024**2):.2f} MB"
     return f"{size_in_bytes/(1024**3):.2f} GB"
 
+# -----------------------------------------------------------------------------
+# EXTRACCIÓN DE FECHA CON EXIFTOOL
+# -----------------------------------------------------------------------------
 
 def leer_fecha_con_exiftool(filepath):
     """
-    Extrae DateTimeOriginal de EXIF usando exiftool.
-    Retorna datetime o None si no está disponible o ocurre error.
+    Extrae DateTimeOriginal de EXIF usando exiftool -j.
+    Devuelve datetime o None si no está presente o ocurre un error.
     """
     try:
         result = subprocess.run(
@@ -92,23 +98,18 @@ def leer_fecha_con_exiftool(filepath):
             capture_output=True, text=True
         )
         if result.returncode != 0:
-            logger.warning(f"Exiftool falló: {result.stderr.strip()} ({filepath})")
+            logger.warning(f"[EXIFTOOL] fallo: {result.stderr.strip()} ({filepath})")
             return None
 
         data = json.loads(result.stdout or "[]")
-        if not isinstance(data, list) or not data:
+        if not data or "DateTimeOriginal" not in data[0]:
             return None
 
-        dt_str = data[0].get("DateTimeOriginal")
-        if not dt_str:
-            return None
-
-        # Quitar fracciones de segundo
-        dt_str = dt_str.split(".")[0]
+        dt_str = data[0]["DateTimeOriginal"].split(".")[0]
         try:
             return datetime.strptime(dt_str, "%Y:%m:%d %H:%M:%S")
         except ValueError:
-            logger.warning(f"Formato EXIF inesperado: {dt_str} ({filepath})")
+            logger.warning(f"[EXIF] formato inesperado: {dt_str} ({filepath})")
             return None
 
     except FileNotFoundError:
@@ -118,65 +119,65 @@ def leer_fecha_con_exiftool(filepath):
         logger.error(f"Error leyendo EXIF de '{filepath}': {e}")
         return None
 
+# -----------------------------------------------------------------------------
+# DETERMINACIÓN DE FECHA DE CAPTURA
+# -----------------------------------------------------------------------------
 
 def obtener_fecha_captura(filepath):
     """
-    Determina la fecha de captura en este orden:
-      1) EXIF DateTimeOriginal
-      2) Fecha de creación del fichero en sistema (getctime)
-      3) Si falla, devuelve None (archivo omitido)
+    Determina la fecha de captura en orden:
+      1. EXIF DateTimeOriginal.
+      2. Fecha de creación del fichero (getctime).
+      3. None si no se puede obtener fecha.
+    Registra INFO/WARNING/ERROR según el origen de la fecha.
     """
-    # 1) Prueba EXIF
     fecha_exif = leer_fecha_con_exiftool(filepath)
     if fecha_exif:
         logger.info(f"[EXIF] {fecha_exif} ← {filepath}")
         return fecha_exif
 
-    # 2) Fallback: fecha de creación del sistema
     try:
         ctime = os.path.getctime(filepath)
-        fecha_sistema = datetime.fromtimestamp(ctime)
-        logger.info(f"[FS]   {fecha_sistema} ← {filepath}")
-        return fecha_sistema
+        fecha_fs = datetime.fromtimestamp(ctime)
+        logger.info(f"[FS]   {fecha_fs} ← {filepath}")
+        return fecha_fs
     except Exception as e:
-        logger.error(f"No se obtuvo fecha FS: {e} ({filepath})")
+        logger.error(f"[FS] error: {e} ({filepath})")
 
-    # 3) Indeterminado
-    logger.error(f"Fecha indeterminada. Se omite archivo: {filepath}")
+    logger.error(f"Fecha indeterminada; archivo omitido: {filepath}")
     return None
 
+# -----------------------------------------------------------------------------
+# AJUSTE DE MES PARA HORARIOS ESPECIALES
+# -----------------------------------------------------------------------------
 
 def ajustar_mes_por_horario_especial(fecha):
     """
-    Ajusta fechas con día 1 y hora <08:00 al día anterior
-    para agrupar eventos nocturnos en el mes correcto.
+    Ajusta fechas del día 1 con hora <08:00 al día anterior,
+    para agrupar eventos nocturnos al mes adecuado.
     """
     if fecha.day == 1 and fecha.hour < 8:
         return fecha - timedelta(days=1)
     return fecha
 
+# -----------------------------------------------------------------------------
+# GENERACIÓN DE NOMBRE DE CARPETA DESTINO
+# -----------------------------------------------------------------------------
 
 def generar_nombre_carpeta(fecha):
     """
-    Retorna nombre de carpeta destino en formato 'YYYY.MM'.
+    Construye el nombre de la carpeta destino en formato 'YYYY.MM'.
     """
     return f"{fecha.year}.{fecha.month:02d}"
 
-
-def es_carpeta_yyyy_mm(nombre):
-    """
-    Valida si un string sigue el patrón 'YYYY.MM'.
-    """
-    return re.match(r"^\d{4}\.\d{2}$", nombre) is not None
-
 # -----------------------------------------------------------------------------
-# SELECCIÓN DE CÁMARAS A PROCESAR
+# FUNCIÓN DE SELECCIÓN DE CÁMARAS
 # -----------------------------------------------------------------------------
 
 def seleccionar_camaras():
     """
-    Lista carpetas en CAMERAS (excluye PRIVATE) y permite selección
-    por índices separados por coma. Retorna lista de nombres seleccionados.
+    Muestra las subcarpetas de CAMERAS (excluye PRIVATE),
+    permite selección por índices y devuelve la lista seleccionada.
     """
     if not os.path.isdir(CAMERAS_DIR):
         print(f"ERROR: '{CAMERAS_DIR}' no existe.")
@@ -191,17 +192,12 @@ def seleccionar_camaras():
         return []
 
     print("Cámaras disponibles:")
-    for i, cam in enumerate(disponibles, start=1):
+    for i, cam in enumerate(disponibles, 1):
         print(f"  {i}. {cam}")
     sel = input("Selecciona cámaras (p.ej. '1,2'): ")
     indices = [int(x) for x in sel.split(',') if x.strip().isdigit()]
 
-    seleccionadas = [
-        disponibles[i-1]
-        for i in indices
-        if 1 <= i <= len(disponibles)
-    ]
-    return seleccionadas
+    return [disponibles[i-1] for i in indices if 1 <= i <= len(disponibles)]
 
 # -----------------------------------------------------------------------------
 # ORGANIZACIÓN DE ARCHIVOS POR FECHA
@@ -209,64 +205,57 @@ def seleccionar_camaras():
 
 def organizar_fotos_por_fecha(camaras):
     """
-    Para cada cámara seleccionada:
-      - Itera archivos multimedia
-      - Obtiene fecha de captura fiable
-      - Ajusta mes si es horario especial
-      - Mueve a subcarpeta 'YYYY.MM'
-      - Registra estadísticas y duplicados
+    Para cada cámara:
+      - Recorre archivos multimedia.
+      - Obtiene fecha de captura fiable.
+      - Ajusta mes si aplica horario especial.
+      - Crea carpeta destino YYYY.MM.
+      - Mueve archivo y actualiza folders_report.
+      - Detecta duplicados y los registra.
     """
     for cam in camaras:
-        if cam == "PRIVATE":
-            continue
         base = os.path.join(CAMERAS_DIR, cam)
-        if not os.path.isdir(base):
-            continue
+        logger.info(f"[INICIO] {base}")
 
-        logger.info(f"Iniciando: {base}")
         for nombre in os.listdir(base):
             origen = os.path.join(base, nombre)
             if os.path.isdir(origen):
                 continue
-
             _, ext = os.path.splitext(nombre)
             if ext.lower() not in PHOTO_EXTENSIONS:
                 continue
 
-            # Obtener fecha de captura
             fecha = obtener_fecha_captura(origen)
             if not fecha:
                 continue
 
             fecha = ajustar_mes_por_horario_especial(fecha)
-            destino_dir = os.path.join(base, generar_nombre_carpeta(fecha))
+            carpeta_fecha = generar_nombre_carpeta(fecha)
+            destino_dir = os.path.join(base, carpeta_fecha)
 
-            # Crear carpeta destino si no existe
             if not os.path.exists(destino_dir):
                 try:
                     os.mkdir(destino_dir)
-                    logger.info(f"Carpeta creada: {destino_dir}")
+                    logger.info(f"[MKDIR] Creada carpeta: {destino_dir}")
                 except OSError as e:
-                    logger.error(f"Error creando carpeta: {e}")
+                    logger.error(f"[ERROR] creando carpeta: {e}")
                     continue
 
             destino = os.path.join(destino_dir, nombre)
             if os.path.exists(destino):
-                logger.warning(f"Duplicado: {origen}")
+                logger.warning(f"[DUP] {origen}")
                 duplicates.append(origen)
                 continue
 
-            # Mover archivo
             try:
                 size = os.path.getsize(origen)
                 shutil.move(origen, destino)
-                logger.info(f"Movido: {nombre} → {destino_dir}")
+                logger.info(f"[MOVE] {nombre} → {carpeta_fecha}")
 
                 rpt = folders_report.setdefault(destino_dir, {
-                    'created': not os.path.exists(destino_dir),
                     'photos_count': 0,
-                    'ext_count': {},
-                    'bytes_moved': 0
+                    'bytes_moved': 0,
+                    'ext_count': {}
                 })
                 rpt['photos_count'] += 1
                 rpt['bytes_moved']   += size
@@ -274,24 +263,25 @@ def organizar_fotos_por_fecha(camaras):
                 rpt['ext_count'][ext.lower()] += 1
 
             except (PermissionError, OSError) as e:
-                logger.error(f"Error moviendo '{nombre}': {e}")
+                logger.error(f"[ERROR] moviendo '{nombre}': {e}")
 
 # -----------------------------------------------------------------------------
-# GENERACIÓN DE INFORME PDF COMPACTO
+# GENERACIÓN DE INFORME PDF (ISO/IEC/IEEE 26514:2018 - Documentación de software)
 # -----------------------------------------------------------------------------
 
 def generar_resumen_pdf():
     """
-    Crea un PDF con:
-      - Portada con título y fecha de ejecución
-      - Métricas globales
-      - Tabla resumen por carpeta
-      - Listado de duplicados
+    Crea un PDF compacto con:
+      - Portada (título y fecha).
+      - Métricas globales.
+      - Tabla resumen por carpeta.
+      - Lista de duplicados.
     """
     if not folders_report and not duplicates:
+        logger.info("Sin datos para PDF.")
         return
 
-    archivo_pdf = os.path.join(PDF_DIR, f"organizar_por_fecha_{today_str}.pdf")
+    pdf_file = os.path.join(PDF_DIR, f"organizar_por_fecha_{today_str}.pdf")
     pdf = FPDF(format='A4', orientation='P', unit='mm')
     pdf.set_auto_page_break(auto=True, margin=10)
     pdf.set_margins(15, 15, 15)
@@ -306,26 +296,23 @@ def generar_resumen_pdf():
     pdf.ln(10)
 
     # Métricas generales
-    total_photos     = sum(d['photos_count'] for d in folders_report.values())
-    total_bytes      = sum(d['bytes_moved']   for d in folders_report.values())
-    total_folders    = len(folders_report)
-    total_duplicates = len(duplicates)
-    cameras_proc     = ", ".join(globals().get('seleccionadas', [])) or "—"
+    total_photos      = sum(d['photos_count'] for d in folders_report.values())
+    total_bytes_moved = sum(d['bytes_moved']   for d in folders_report.values())
+    total_folders     = len(folders_report)
+    total_dups        = len(duplicates)
 
     pdf.set_font("Arial", "B", 12)
     pdf.cell(0, 6, "Métricas Generales", ln=True)
     pdf.ln(2)
     pdf.set_font("Arial", "", 11)
-    pdf.cell(60, 6, "Cámaras:", border=0)
-    pdf.cell(0, 6, cameras_proc, ln=True)
     pdf.cell(60, 6, "Carpetas destino:", border=0)
     pdf.cell(0, 6, str(total_folders), ln=True)
     pdf.cell(60, 6, "Fotos movidas:", border=0)
     pdf.cell(0, 6, str(total_photos), ln=True)
     pdf.cell(60, 6, "Tamaño total:", border=0)
-    pdf.cell(0, 6, human_readable_size(total_bytes), ln=True)
+    pdf.cell(0, 6, human_readable_size(total_bytes_moved), ln=True)
     pdf.cell(60, 6, "Duplicados:", border=0)
-    pdf.cell(0, 6, str(total_duplicates), ln=True)
+    pdf.cell(0, 6, str(total_dups), ln=True)
     pdf.ln(8)
 
     # Tabla resumen
@@ -337,12 +324,13 @@ def generar_resumen_pdf():
     pdf.cell(40, 7, "Fotos",  border=1, align='C')
     pdf.cell(40, 7, "Tamaño", border=1, align='C')
     pdf.ln()
+
     pdf.set_font("Arial", "", 11)
     for folder, data in folders_report.items():
-        nombre = folder.replace("\\", "/").split("/")[-1]
-        if len(nombre) > 30:
-            nombre = "…" + nombre[-29:]
-        pdf.cell(80, 6, nombre, border=1)
+        name = os.path.basename(folder)
+        if len(name) > 30:
+            name = "…" + name[-29:]
+        pdf.cell(80, 6, name, border=1)
         pdf.cell(40, 6, str(data['photos_count']), border=1, align='C')
         pdf.cell(40, 6, human_readable_size(data['bytes_moved']), border=1, align='R')
         pdf.ln()
@@ -355,39 +343,34 @@ def generar_resumen_pdf():
         pdf.ln(2)
         pdf.set_font("Arial", "", 10)
         for dup in duplicates:
-            linea = dup.replace("\\", "/")
-            if len(linea) > 70:
-                linea = "…" + linea[-69:]
-            pdf.multi_cell(0, 5, f"• {linea}")
+            line = dup.replace("\\", "/")
+            if len(line) > 70:
+                line = "…" + line[-69:]
+            pdf.multi_cell(0, 5, f"• {line}")
         pdf.ln(3)
 
-    pdf.output(archivo_pdf)
-    logger.info(f"PDF generado: {archivo_pdf}")
+    pdf.output(pdf_file)
+    logger.info(f"PDF generado: {pdf_file}")
 
 # -----------------------------------------------------------------------------
-# PUNTO DE ENTRADA
+# EJECUCIÓN PRINCIPAL
 # -----------------------------------------------------------------------------
 
 def main():
     """
-    Orquesta todo el flujo:
-      1) Selección de cámaras
-      2) Organización de archivos por fecha
-      3) Generación de informe PDF
+    Orquesta el flujo completo:
+      1) Selección de cámaras.
+      2) Organización de archivos por fecha.
+      3) Generación del informe PDF.
     """
-    try:
-        selec = seleccionar_camaras()
-        if not selec:
-            print("No se seleccionaron cámaras. Terminando.")
-            return
-        globals()['seleccionadas'] = selec
+    cameras = seleccionar_camaras()
+    if not cameras:
+        print("No se seleccionaron cámaras. Saliendo.")
+        return
 
-        organizar_fotos_por_fecha(selec)
-        generar_resumen_pdf()
-        logger.info("Ejecución completada con éxito.")
-    except Exception as e:
-        logger.error(f"Error inesperado en main(): {e}")
-
+    organizar_fotos_por_fecha(cameras)
+    generar_resumen_pdf()
+    logger.info("Ejecución completada correctamente.")
 
 if __name__ == "__main__":
     main()
